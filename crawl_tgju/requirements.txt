@@ -1,0 +1,6 @@
+kafka-python
+beautifulsoup4
+pandas
+confluent-kafka
+requests
+lxml

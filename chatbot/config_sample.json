@@ -1,0 +1,10 @@
+{
+    "clickhouse": {
+        "host": "ch-proxy",
+        "port": 80,
+        "user": "",
+        "password": "",
+        "database": ""
+    },
+    "aval_ai_api_key": ""
+}

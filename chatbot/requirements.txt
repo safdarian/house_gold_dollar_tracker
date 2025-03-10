@@ -1,0 +1,7 @@
+chainlit
+fastapi
+clickhouse-connect==0.8.15
+jdatetime
+openai
+numpy
+pandas

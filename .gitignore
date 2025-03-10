@@ -1,0 +1,11 @@
+chatbot/__pycache__
+chatbot/.vscode
+chatbot/.idea
+chatbot/.chainlit
+crawl_divar/__pycache__
+crawl_divar/.vscode
+crawl_divar/.idea
+crawl_tgju/__pycache__
+kafka_consumer_tgju_gold18/__pycache__
+kafka_consumer_tgju_dollar/__pycache__
+kafka_consumer_divar/__pycache__

@@ -1,0 +1,345 @@
+services:
+
+  crawl-divar:
+    build: ./crawl_divar
+    container_name: crawl-divar
+    volumes:
+      - ./crawl_divar:/app
+    working_dir: /app
+    command: python crawl.py
+    depends_on:
+      - kafka
+    networks:
+      - backend
+  
+  crawl-tgju:
+    build: ./crawl_tgju
+    container_name: crawl-tgju
+    volumes:
+      - ./crawl_tgju:/app
+    working_dir: /app
+    command: python crawl.py
+    depends_on:
+      - kafka
+    networks:
+      - backend
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper
+    container_name: zookeeper
+    restart: always
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_ADMIN_ENABLE_SERVER=false
+    ports:
+      - "2181:2181"
+    networks:
+      - backend
+
+  kafka:
+    image: confluentinc/cp-kafka
+    container_name: kafka
+    environment:
+      - KAFKA_BROKER_ID=0
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_NUM_PARTITIONS=12
+      - KAFKA_COMPRESSION_TYPE=gzip
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CONFLUENT_SUPPORT_METRICS_ENABLE=false
+      - KAFKA_JMX_PORT=9091
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_AUTHORIZER_CLASS_NAME=kafka.security.authorizer.AclAuthorizer
+      - KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND=true
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    networks:
+      - backend
+
+  kafka-setup:
+    image: confluentinc/cp-kafka
+    container_name: kafka-setup
+    entrypoint: >
+      bash -c "
+      /usr/bin/kafka-topics --create --if-not-exists --topic cleanedData --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 &&
+      /usr/bin/kafka-topics --create --if-not-exists --topic dollar_data --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 &&
+      /usr/bin/kafka-topics --create --if-not-exists --topic gold18_data --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 &&
+      echo 'Kafka topics created'"
+    depends_on:
+      - kafka
+    networks:
+      - backend
+
+  consumer-divar:
+    build: ./kafka_consumer_divar
+    container_name: consumer
+    volumes:
+      - ./kafka_consumer_divar:/app
+    working_dir: /app
+    command: python main.py
+    restart: always
+    depends_on:
+      - kafka
+      - ch-proxy
+    networks:
+      - backend
+
+  consumer-tgju-dollar:
+    build: ./kafka_consumer_tgju_dollar
+    container_name: consumer-tgju-dollar
+    volumes:
+      - ./kafka_consumer_tgju_dollar:/app
+    working_dir: /app
+    restart: always
+    command: python main.py
+    depends_on:
+      - kafka
+      - ch-proxy
+    networks:
+      - backend
+
+  consumer-tgju-gold18:
+    build: ./kafka_consumer_tgju_gold18
+    container_name: consumer-tgju-gold18
+    volumes:
+      - ./kafka_consumer_tgju_gold18:/app
+    working_dir: /app
+    restart: always
+    command: python main.py
+    depends_on:
+      - kafka
+      - ch-proxy
+    networks:
+      - backend
+
+
+
+  superset:
+    image: apache/superset:latest
+    container_name: superset
+    ports:
+      - "8088:8088" # Superset web UI port
+    environment:
+      - LOAD_EXAMPLES=yes
+      - SUPERSET_SECRET_KEY=your_secret_key
+      - SUPERSET_SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://superset:superset@postgres:5432/superset
+    depends_on:
+      - postgres
+      - ch-proxy
+    entrypoint: ["/entrypoint.sh", "superset", "run", "-h", "0.0.0.0", "-p", "8088"]
+    volumes:
+      - ./superset/entrypoint.sh:/entrypoint.sh
+    networks:
+      - backend
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_USER: superset
+      POSTGRES_PASSWORD: superset
+      POSTGRES_DB: superset
+    volumes:
+      - ./postgres_data:/var/lib/postgresql
+    ports:
+      - 5432:5432
+    networks:
+      - backend
+  
+  postgres-airflow:
+    image: postgres:15
+    container_name: postgres-airflow
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - ./postgres_airflow_data:/var/lib/postgresql
+    ports:
+      - 127.0.0.1:5433:5432
+    networks:
+      - backend
+
+
+  airflow:
+    build: ./airflow
+    container_name: airflow
+    restart: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/requirements.txt:/requirements.txt
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+    command: >
+      bash -c "
+      airflow db init &&
+      airflow users create --username admin --password admin --firstname AmirHossein --lastname Safdarian --role Admin --email safdarian2000@gmail.com &&
+      airflow scheduler & airflow webserver
+      "
+    depends_on:
+      - kafka
+      - ch-proxy
+      - postgres-airflow
+    networks:
+      - backend
+
+  chatbot:
+    build: ./chatbot
+    container_name: chatbot
+    volumes:
+      - ./chatbot:/app
+    working_dir: /app
+    command: python -m chainlit run --host 0.0.0.0 --port 8000 app.py -w 
+    depends_on:
+      - ch-proxy
+    ports:
+      - 8000:8000
+    networks:
+      - backend
+  clickhouse-01:
+    image: "clickhouse/clickhouse-server:${CHVER:-latest}"
+    user: "101:101"
+    container_name: clickhouse-01
+    hostname: clickhouse-01
+    networks:
+      backend:
+        # ipv4_address: 192.168.9.1
+    volumes:
+      - ./fs/volumes/clickhouse-01/etc/clickhouse-server/config.d/config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./fs/volumes/clickhouse-01/etc/clickhouse-server/users.d/users.xml:/etc/clickhouse-server/users.d/users.xml
+      - ./clickhouse_1/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./clickhouse_1/clickhouse_data:/var/lib/clickhouse
+    ports:
+      - "0.0.0.0:8123:8123"
+      - "0.0.0.0:9000:9000"
+    depends_on:
+      - clickhouse-keeper-01
+      - clickhouse-keeper-02
+      - clickhouse-keeper-03
+  clickhouse-02:
+    image: "clickhouse/clickhouse-server:${CHVER:-latest}"
+    user: "101:101"
+    container_name: clickhouse-02
+    hostname: clickhouse-02
+    networks:
+      backend:
+        # ipv4_address: 192.168.9.2
+    volumes:
+      - ./fs/volumes/clickhouse-02/etc/clickhouse-server/config.d/config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./fs/volumes/clickhouse-02/etc/clickhouse-server/users.d/users.xml:/etc/clickhouse-server/users.d/users.xml
+      - ./clickhouse_2/clickhouse_data:/var/lib/clickhouse
+    ports:
+      - "0.0.0.0:8124:8123"
+      - "0.0.0.0:9001:9000"
+    depends_on:
+      - clickhouse-keeper-01
+      - clickhouse-keeper-02
+      - clickhouse-keeper-03
+  clickhouse-03:
+    image: "clickhouse/clickhouse-server:${CHVER:-latest}"
+    user: "101:101"
+    container_name: clickhouse-03
+    hostname: clickhouse-03
+    networks:
+      backend:
+        # ipv4_address: 192.168.9.3
+    volumes:
+      - ./fs/volumes/clickhouse-03/etc/clickhouse-server/config.d/config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./fs/volumes/clickhouse-03/etc/clickhouse-server/users.d/users.xml:/etc/clickhouse-server/users.d/users.xml
+      - ./clickhouse_3/clickhouse_data:/var/lib/clickhouse
+    ports:
+      - "0.0.0.0:8125:8123"
+      - "0.0.0.0:9002:9000"
+    depends_on:
+      - clickhouse-keeper-01
+      - clickhouse-keeper-02
+      - clickhouse-keeper-03
+  clickhouse-04:
+    image: "clickhouse/clickhouse-server:${CHVER:-latest}"
+    user: "101:101"
+    container_name: clickhouse-04
+    hostname: clickhouse-04
+    networks:
+      backend:
+        # ipv4_address: 192.168.9.4
+    volumes:
+      - ./fs/volumes/clickhouse-04/etc/clickhouse-server/config.d/config.xml:/etc/clickhouse-server/config.d/config.xml
+      - ./fs/volumes/clickhouse-04/etc/clickhouse-server/users.d/users.xml:/etc/clickhouse-server/users.d/users.xml
+      - ./clickhouse_4/clickhouse_data:/var/lib/clickhouse
+    ports:
+        - "0.0.0.0:8126:8123"
+        - "0.0.0.0:9003:9000"
+    depends_on:
+      - clickhouse-keeper-01
+      - clickhouse-keeper-02
+      - clickhouse-keeper-03
+  clickhouse-keeper-01:
+    image: "clickhouse/clickhouse-keeper:${CHKVER:-latest-alpine}"
+    user: "101:101"
+    container_name: clickhouse-keeper-01
+    hostname: clickhouse-keeper-01
+      
+    networks:
+      backend:
+        # ipv4_address: 192.168.9.5
+    volumes:
+      - ./fs/volumes/clickhouse-keeper-01/etc/clickhouse-keeper/keeper_config.xml:/etc/clickhouse-keeper/keeper_config.xml
+    ports:
+        - "0.0.0.0:9181:9181"
+  clickhouse-keeper-02:
+    image: "clickhouse/clickhouse-keeper:${CHKVER:-latest-alpine}"
+    user: "101:101"
+    container_name: clickhouse-keeper-02
+    hostname: clickhouse-keeper-02
+    networks:
+      backend:
+        # ipv4_address: 192.168.9.6
+    volumes:
+      - ./fs/volumes/clickhouse-keeper-02/etc/clickhouse-keeper/keeper_config.xml:/etc/clickhouse-keeper/keeper_config.xml
+    ports:
+        - "0.0.0.0:9182:9181"
+  clickhouse-keeper-03:
+    image: "clickhouse/clickhouse-keeper:${CHKVER:-latest-alpine}"
+    user: "101:101"
+    container_name: clickhouse-keeper-03
+    hostname: clickhouse-keeper-03
+    networks:
+      backend:
+        # ipv4_address: 192.168.9.7
+    volumes:
+      - ./fs/volumes/clickhouse-keeper-03/etc/clickhouse-keeper/keeper_config.xml:/etc/clickhouse-keeper/keeper_config.xml
+    ports:
+        - "0.0.0.0:9183:9181"
+  ch-proxy:
+    image: contentsquareplatform/chproxy:v1.26.4
+    platform: linux/amd64
+    container_name: ch-proxy
+    hostname: ch-proxy
+    restart: always
+    networks:
+      backend:
+        # ipv4_address: 192.168.9.10
+    ports:
+      - "0.0.0.0:443:443"
+      - "0.0.0.0:80:80"
+    volumes:
+      - ./fs/volumes/ch-proxy/config/config.yml:/opt/config.yml
+    depends_on:
+      - clickhouse-01
+      - clickhouse-02
+      - clickhouse-03
+      - clickhouse-04
+    command: [-config, /opt/config.yml]
+networks:
+  backend:
+    driver: bridge
